@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Sessions</title>
+<style>
+:root{
+  --bg:#f5f6f8; --panel:#ffffff; --panel2:#eef0f3; --border:#dce0e6; --text:#16191d; --muted:#5d6876;
+  --run:#1a7f37; --pause:#9a6700; --susp:#6639ba; --resume:#0969da; --err:#cf222e; --accent:#0969da;
+  --term:#0f1318; --term-text:#d6dde5; --term-dim:#7d8896;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0d1015; --panel:#151a21; --panel2:#1b212a; --border:#2b323d; --text:#e8edf2; --muted:#8c97a6;
+    --run:#3fb950; --pause:#d29922; --susp:#a371f7; --resume:#58a6ff; --err:#f85149; --accent:#4c9aff;
+    --term:#0a0d11; --term-text:#d6dde5; --term-dim:#7d8896;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+header{background:var(--panel);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;position:sticky;top:0;z-index:2}
+header h1{font-size:18px;margin:0;font-weight:700}
+header p{margin:2px 0 0;color:var(--muted);font-size:13px}
+.spacer{flex:1}
+.counts{display:flex;gap:14px;font-size:13px;color:var(--muted)}
+.counts b{color:var(--text);font-variant-numeric:tabular-nums}
+.filters{display:flex;gap:6px}
+.filters button,a.back{font:inherit;font-size:13px;border:1px solid var(--border);background:var(--panel);color:var(--text);border-radius:7px;padding:4px 11px;cursor:pointer;text-decoration:none}
+.filters button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+main{padding:18px 24px 30px;display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px;max-width:1800px;margin:0 auto}
+.empty{color:var(--muted);grid-column:1/-1;padding:40px 0;text-align:center}
+.sess{background:var(--panel);border:1px solid var(--border);border-radius:11px;overflow:hidden;display:flex;flex-direction:column;min-width:0}
+.top{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid var(--border)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--run);flex:none}
+.sess[data-tone=pause] .dot{background:var(--pause)}
+.sess[data-tone=susp] .dot{background:var(--susp)}
+.sess[data-tone=resume] .dot{background:var(--resume)}
+.sess[data-tone=err] .dot{background:var(--err)}
+.sess[data-tone=run] .dot{animation:pulse 1.4s infinite}
+.sess[data-tone=done] .dot{background:var(--muted)}
+@keyframes pulse{50%{opacity:.35}}
+.name{font-weight:650;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kind{flex:none;font-size:9.5px;font-weight:700;letter-spacing:.05em;padding:0 6px;border-radius:4px;border:1px solid var(--border);color:var(--muted)}
+.kind.claude{color:var(--accent);border-color:var(--accent)}
+.kind.coder{color:#58a6ff;border-color:#58a6ff}
+.kind.tester{color:#3fb950;border-color:#3fb950}
+.kind.docs{color:#d29922;border-color:#d29922}
+.term .review{color:#d2a8ff;font-weight:600}
+.state{margin-left:auto;font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap}
+.term{background:var(--term);color:var(--term-text);height:210px;overflow:auto;padding:9px 11px;font-size:12px;line-height:1.5;margin:0;white-space:pre-wrap;word-break:break-word}
+.term .say{color:var(--term-text)}
+.term .tool{color:var(--term-dim)}
+.term .add{color:#3fb950}
+.term .del{color:#f85149}
+.term .meta{color:var(--term-dim)}
+.term .who{color:#58a6ff;font-weight:600}
+.foot{padding:6px 11px;font-size:11.5px;color:var(--muted);display:flex;justify-content:space-between;gap:8px;border-top:1px solid var(--border)}
+.foot span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:700px){ header,main{padding-left:16px;padding-right:16px} main{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Agent sessions</h1>
+    <p>Each box is one agent in its own sandbox, narrating what it does as it happens.</p>
+  </div>
+  <div class="counts" id="counts"></div>
+  <div class="spacer"></div>
+  <div class="filters" id="filters">
+    <button data-f="all" class="on">All</button>
+    <button data-f="working">Working</button>
+    <button data-f="review">Waiting for review</button>
+    <button data-f="done">Finished</button>
+  </div>
+  <a class="back" href="/">← Dashboard</a>
+</header>
+<main id="grid"></main>
+
+<script>
+const $ = id => document.getElementById(id);
+let filter = 'all';
+const boxes = {};
+
+// One status for each agent, matching the dashboard's labels.
+function status(a) {
+  if (a.failed || a.phase === 'failed') return ['FAILED', 'err', 'done'];
+  if (a.done) return ['DONE', 'done', 'done'];
+  if (a.pending === 'suspend') return ['SUSPENDING', 'susp', 'working'];
+  if (a.pending === 'pause') return ['PAUSING', 'pause', 'working'];
+  if (a.reviewing && !a.approved && a.state === 'RUNNING') return ['WORKING', 'run', 'working'];
+  if (a.reviewing && !a.approved) return ['WAITING FOR REVIEW', 'susp', 'review'];
+  if (a.approved) return ['APPROVED · FINISHING', 'resume', 'working'];
+  if (a.phase === 'starting') return [a.launchStep ? a.launchStep.toUpperCase() : 'STARTING', 'resume', 'working'];
+  if (a.phase === 'queued') return ['QUEUED', 'susp', 'working'];
+  if (a.state === 'PAUSED') return ['PAUSED', 'pause', 'working'];
+  if (a.state === 'SUSPENDED') return ['SUSPENDED', 'susp', 'working'];
+  if (a.state === 'RESUMING') return ['RESUMING', 'resume', 'working'];
+  return ['WORKING', 'run', 'working'];
+}
+
+const ORDER = { working: 0, review: 1, done: 2 };
+
+function lineClass(t) {
+  if (t.startsWith('| +') && !t.startsWith('| +++')) return 'add';
+  if (t.startsWith('| -') && !t.startsWith('| ---')) return 'del';
+  if (t.startsWith('| ')) return 'meta';
+  if (t.startsWith('tool:') || t.startsWith('Claude finished')) return 'tool';
+  if (t.startsWith('Reviewer ›')) return 'review';
+  return 'say';
+}
+
+function renderTerm(term, lines, a) {
+  const key = lines.join('\n');
+  if (term.dataset.key === key) return;
+  term.dataset.key = key;
+  const atBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 24;
+  term.innerHTML = '';
+  if (!lines.length) {
+    const s = document.createElement('span');
+    s.className = 'meta';
+    s.textContent = a.phase === 'queued' ? 'Queued. Waiting for a free slot…' : 'Starting the sandbox…';
+    term.appendChild(s);
+    return;
+  }
+  for (const raw of lines) {
+    const span = document.createElement('span');
+    let text = raw;
+    if (text.startsWith('Claude: ')) {
+      const who = document.createElement('span');
+      who.className = 'who';
+      who.textContent = 'Claude › ';
+      term.appendChild(who);
+      text = text.slice(8);
+    }
+    span.className = lineClass(text);
+    span.textContent = text + '\n';
+    term.appendChild(span);
+  }
+  if (atBottom) term.scrollTop = term.scrollHeight;
+}
+
+function box(a) {
+  let el = boxes[a.name];
+  if (el) return el;
+  el = document.createElement('div');
+  el.className = 'sess';
+  el.innerHTML = `<div class="top"><span class="dot"></span><span class="name mono"></span><span class="kind"></span><span class="state"></span></div>
+    <pre class="term mono"></pre>
+    <div class="foot"><span class="step"></span><span class="where mono"></span></div>`;
+  el.querySelector('.name').textContent = a.name;
+  const kind = el.querySelector('.kind');
+  const label = { coder: 'CODER', tester: 'TESTS', docs: 'DOCS', sim: 'SIM' }[a.role] || (a.kind === 'sim' ? 'SIM' : 'CLAUDE');
+  kind.textContent = a.kind === 'sim' && a.role !== 'sim' ? `${label} · SIM` : label;
+  if (a.role && a.role !== 'sim') kind.classList.add(a.role);
+  boxes[a.name] = el;
+  return el;
+}
+
+function render(state) {
+  const list = state.agents.slice();
+  const counts = { working: 0, review: 0, done: 0 };
+  list.forEach(a => { counts[status(a)[2]]++; });
+  $('counts').innerHTML = '';
+  for (const [label, n] of [['agents', list.length], ['working', counts.working], ['waiting for review', counts.review], ['finished', counts.done]]) {
+    const s = document.createElement('span');
+    s.innerHTML = '<b></b> ';
+    s.querySelector('b').textContent = n;
+    s.append(label);
+    $('counts').appendChild(s);
+  }
+  list.sort((x, y) => ORDER[status(x)[2]] - ORDER[status(y)[2]] || x.name.localeCompare(y.name));
+  const grid = $('grid');
+  const shown = list.filter(a => filter === 'all' || status(a)[2] === filter);
+  const names = new Set(list.map(a => a.name));
+  for (const n in boxes) if (!names.has(n)) { boxes[n].remove(); delete boxes[n]; }
+  [...grid.children].forEach(c => { if (c.classList.contains('empty')) c.remove(); });
+  for (const a of list) {
+    const el = box(a);
+    const [label, tone] = status(a);
+    el.dataset.tone = tone;
+    el.querySelector('.state').textContent = label;
+    renderTerm(el.querySelector('.term'), a.transcript || [], a);
+    const steps = a.steps || [];
+    el.querySelector('.step').textContent = a.done ? `✓ ${a.result}` : a.failed ? `✗ ${a.failed}`
+      : steps.length ? `step ${Math.min(a.step + 1, steps.length)}/${steps.length} · ${steps[Math.min(a.step, steps.length - 1)]}` : '';
+    el.querySelector('.where').textContent = a.worker ? `${a.worker.node} · ${a.worker.pod.slice(-5)}` : (a.phase === 'queued' || a.state === 'SUSPENDED') ? 'in snapshot storage' : '';
+    el.hidden = !shown.includes(a);
+  }
+  // Keep DOM order in step with the sort, appending only when it changes.
+  shown.forEach((a, i) => { if (grid.children[i] !== boxes[a.name]) grid.insertBefore(boxes[a.name], grid.children[i] || null); });
+  if (!shown.length) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = list.length ? 'No agents in this view.' : 'No agents yet. Start some from the dashboard.';
+    grid.appendChild(e);
+  }
+}
+
+$('filters').onclick = e => {
+  const f = e.target.dataset.f;
+  if (!f) return;
+  filter = f;
+  document.querySelectorAll('#filters button').forEach(b => b.classList.toggle('on', b.dataset.f === f));
+  refresh();
+};
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/state', { cache: 'no-store' });
+    render(await r.json());
+  } catch (e) {
+    $('grid').innerHTML = '<div class="empty">Dashboard server not reachable. Run python3 ui/server.py.</div>';
+  }
+}
+setInterval(refresh, 1000);
+refresh();
+</script>
+</body>
+</html>

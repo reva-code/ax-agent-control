@@ -1,0 +1,9 @@
+# Default-deny egress for an agent actor: only GitHub (clone/push) and the
+# Claude API. TLS passes through unmodified; nothing is intercepted.
+rules:
+- tlsPassthrough:
+    hostnames: ["github.com", "*.github.com"]
+    ports: {numbers: [443]}
+- tlsPassthrough:
+    hostnames: ["api.anthropic.com"]
+    ports: {numbers: [443]}

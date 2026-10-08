@@ -1,0 +1,322 @@
+diff --git a/.ko.yaml b/.ko.yaml
+index 3a3c0bc..635bb8a 100644
+--- a/.ko.yaml
++++ b/.ko.yaml
+@@ -13,6 +13,9 @@
+ # limitations under the License.
+ 
+ defaultBaseImage: cgr.dev/chainguard/static:latest
++# Local kind on Apple Silicon: an amd64 ax-server runs under emulation and segfaults.
++defaultPlatforms:
++  - linux/arm64
+ baseImageOverrides:
+   github.com/google/ax/cmd/ax-task-runner: alpine/git:latest
+ builds:
+diff --git a/deploy/ax-server.yaml b/deploy/ax-server.yaml
+index 1e577d3..0477081 100644
+--- a/deploy/ax-server.yaml
++++ b/deploy/ax-server.yaml
+@@ -81,7 +81,9 @@ spec:
+             - name: ATENET_ROUTER_ADDR
+               value: "atenet-router.ate-system.svc.cluster.local:80"
+             - name: AX_SNAPSHOTS_BUCKET
+-              value: "gs://dberkov-gke-dev3/ate-env/"
++              value: "gs://ate-snapshots/ate-env/" # local kind: rustfs bucket from install-ate-kind.sh
++            - name: AX_SNAPSHOT_SCOPE
++              value: "full" # keep process memory across pause/suspend, not just the workspace
+           ports:
+             - containerPort: 8080
+               name: http
+diff --git a/internal/controller/reconciler.go b/internal/controller/reconciler.go
+index 55814d7..322c45d 100644
+--- a/internal/controller/reconciler.go
++++ b/internal/controller/reconciler.go
+@@ -172,7 +172,7 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
+ 		slog.Info("ensuring custom ActorTemplate for task", "image", task.Spec.Image)
+ 		customTemplateName := taskTemplateName(task.Metadata.Name, task.Spec.Image, extraEnv)
+ 
+-		tmpl, err := r.client.EnsureActorTemplateWithImage(ctx, templateAtespace, templateName, atespace, customTemplateName, task.Spec.Image, extraEnv)
++		tmpl, err := r.client.EnsureActorTemplateWithImage(ctx, templateAtespace, templateName, atespace, customTemplateName, task.Spec.Image, task.Spec.GetResources().GetLimits(), extraEnv)
+ 		if err != nil {
+ 			slog.Warn("could not create custom ActorTemplate, falling back to default template", "error", err)
+ 		} else if tmpl != nil && tmpl.Metadata != nil {
+@@ -206,6 +206,15 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
+ 	// Resume the Actor to activate container execution
+ 	slog.Info("resuming actor on Substrate worker", "actor", actorName)
+ 	_, workerIP, err := r.client.ResumeActor(ctx, atespace, actorName)
++	if status.Code(err) == codes.ResourceExhausted {
++		// No worker has room for the actor's declared resources. That is not a
++		// failure: the task stays suspended and can be resumed again once
++		// capacity frees up.
++		task.Status.WorkerIp = ""
++		task.Status.Phase = "Suspended"
++		r.setCondition(task, condReady, "False", "WaitingForCapacity", err.Error(), now)
++		return task, status.Errorf(codes.ResourceExhausted, "no worker has room for task %s: %v", task.Metadata.Name, err)
++	}
+ 	if err != nil {
+ 		r.setNotReady(task, "ActorResumeFailed", err.Error(), now)
+ 		task.Status.Phase = "Failed"
+diff --git a/internal/controller/reconciler_test.go b/internal/controller/reconciler_test.go
+index e91954e..5ce0c9d 100644
+--- a/internal/controller/reconciler_test.go
++++ b/internal/controller/reconciler_test.go
+@@ -46,6 +46,8 @@ type mockControlServer struct {
+ 	getActorFunc     func(ctx context.Context, req *ateapipb.GetActorRequest) (*ateapipb.Actor, error)
+ 	crashedActor     string
+ 	revertedActors   []string
++	resumeErr        error                   // returned by ResumeActor when set
++	lastTemplate     *ateapipb.ActorTemplate // last template passed to CreateActorTemplate
+ }
+ 
+ // noSecrets is a SecretResolver for tests: it never finds a key and never touches a cluster.
+@@ -67,6 +69,7 @@ func (m *mockControlServer) CreateActorTemplate(_ context.Context, req *ateapipb
+ 	}
+ 	tmpl := req.GetActorTemplate()
+ 	m.actorTemplates[tmpl.GetMetadata().GetName()] = true
++	m.lastTemplate = tmpl
+ 	return tmpl, nil
+ }
+ 
+@@ -102,6 +105,9 @@ func (m *mockControlServer) ResumeActor(ctx context.Context, req *ateapipb.Resum
+ 		name = req.Actor.Name
+ 	}
+ 	m.resumedActors = append(m.resumedActors, name)
++	if m.resumeErr != nil {
++		return nil, m.resumeErr
++	}
+ 	wIP := "10.244.1.42"
+ 	if m.workerIP != "" {
+ 		wIP = m.workerIP
+@@ -262,6 +268,65 @@ func TestTaskReconciler(t *testing.T) {
+ 	}
+ }
+ 
++func TestTaskReconciler_NoCapacityStaysSuspended(t *testing.T) {
++	ctx := context.Background()
++	lis, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatalf("failed to listen: %v", err)
++	}
++	defer lis.Close()
++
++	mockSrv := &mockControlServer{resumeErr: status.Error(codes.ResourceExhausted, "no free workers available")}
++	grpcServer := grpc.NewServer()
++	ateapipb.RegisterControlServer(grpcServer, mockSrv)
++	go grpcServer.Serve(lis)
++	defer grpcServer.Stop()
++
++	client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
++	if err != nil {
++		t.Fatalf("failed to create substrate client: %v", err)
++	}
++	defer client.Close()
++
++	reconciler := controller.NewTaskReconciler(client, "test-template", "ax-system")
++	reconciler.SecretResolver = noSecrets
++	task := &v1alpha1.Task{
++		ApiVersion: v1alpha1.APIVersion,
++		Kind:       v1alpha1.KindTask,
++		Metadata:   &v1alpha1.ObjectMeta{Name: "big-task", Atespace: "default"},
++		Spec: &v1alpha1.TaskSpec{
++			Image:     "ghrc.io/my-org/my-image",
++			Resources: &v1alpha1.ResourceReqs{Limits: &v1alpha1.ResourceList{Cpu: "1", Memory: "1Gi"}},
++		},
++		Status: &v1alpha1.TaskStatus{Phase: "Running"},
++	}
++
++	reconciled, err := reconciler.Reconcile(ctx, task)
++	if status.Code(err) != codes.ResourceExhausted {
++		t.Fatalf("Reconcile error = %v, want ResourceExhausted", err)
++	}
++	if reconciled == nil || reconciled.Status.Phase != "Suspended" {
++		t.Fatalf("phase = %v, want Suspended (waiting for capacity, not Failed)", reconciled.GetStatus().GetPhase())
++	}
++	var reason string
++	for _, c := range reconciled.Status.Conditions {
++		if c.Type == "Ready" {
++			reason = c.Reason
++		}
++	}
++	if reason != "WaitingForCapacity" {
++		t.Errorf("Ready reason = %q, want WaitingForCapacity", reason)
++	}
++	// The task's declared limits reach the template, where Substrate books them.
++	got := map[string]string{}
++	for _, l := range mockSrv.lastTemplate.GetResources().GetLimits() {
++		got[l.GetName()] = l.GetQuantity()
++	}
++	if got["cpu"] != "1" || got["memory"] != "1Gi" {
++		t.Errorf("template limits = %v, want cpu=1 memory=1Gi", got)
++	}
++}
++
+ func TestTaskReconciler_Suspend(t *testing.T) {
+ 	ctx := context.Background()
+ 
+diff --git a/internal/server/server.go b/internal/server/server.go
+index 2b54a30..652cde6 100644
+--- a/internal/server/server.go
++++ b/internal/server/server.go
+@@ -334,6 +334,12 @@ func (s *Server) ResumeTask(ctx context.Context, req *v1alpha1.ResumeTaskRequest
+ 	if s.reconciler != nil {
+ 		workspaces := s.fetchWorkspaces(ctx, atespace, task)
+ 		reconciled, err := s.reconciler.Reconcile(ctx, task, workspaces...)
++		if status.Code(err) == codes.ResourceExhausted && reconciled != nil {
++			// Not enough capacity right now: the task stays suspended, and the
++			// caller can retry the resume later.
++			_ = s.store.UpdateTaskStatus(ctx, atespace, taskName, reconciled.Status)
++			return nil, err
++		}
+ 		if err != nil {
+ 			task.Status.Phase = "Failed"
+ 			_ = s.store.UpdateTaskStatus(ctx, atespace, taskName, task.Status)
+diff --git a/internal/substrate/client.go b/internal/substrate/client.go
+index 7e65273..a760584 100644
+--- a/internal/substrate/client.go
++++ b/internal/substrate/client.go
+@@ -208,6 +208,17 @@ const (
+ 	DefaultSnapshotsBucket = "gs://dberkov-gke-dev3/ate-env/"
+ )
+ 
++// snapshotScope picks what pause/suspend snapshots keep. DATA (the default)
++// keeps only the workspace volume and resumes from the golden snapshot, so the
++// running task's memory is lost. AX_SNAPSHOT_SCOPE=full keeps process memory
++// too, so a suspended task resumes exactly where it stopped.
++func snapshotScope() ateapipb.SnapshotContentScope {
++	if strings.EqualFold(os.Getenv("AX_SNAPSHOT_SCOPE"), "full") {
++		return ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_FULL
++	}
++	return ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA
++}
++
+ // BuildActorTemplate constructs a Substrate ActorTemplate based on the standard ate-env specification.
+ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string) *ateapipb.ActorTemplate {
+ 	if atespace == "" {
+@@ -262,8 +273,8 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string,
+ 		}},
+ 		SnapshotsConfig: &ateapipb.SnapshotsConfig{
+ 			StorageLocation: snapshotsBucket,
+-			OnPause:         ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
+-			OnCommit:        ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
++			OnPause:         snapshotScope(),
++			OnCommit:        snapshotScope(),
+ 			OnResume: &ateapipb.OnResumeConfig{
+ 				FromData: ateapipb.ResumeSource_RESUME_SOURCE_GOLDEN,
+ 			},
+@@ -275,8 +286,26 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string,
+ 	}
+ }
+ 
+-// EnsureActorTemplateWithImage creates an ActorTemplate using the specified container image and optional environment variables.
+-func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace, baseTemplate, targetAtespace, targetTemplate, image string, extraEnv ...map[string]string) (*ateapipb.ActorTemplate, error) {
++// TemplateResources converts a Task's resource limits into Substrate template
++// limits. Substrate books them against a worker's capacity when it places the
++// actor and sizes the sandbox to them, so a Task that declares limits is only
++// placed where it fits. Nil means the actor declares nothing and books nothing.
++func TemplateResources(limits *v1alpha1.ResourceList) *ateapipb.Resources {
++	var out []*ateapipb.Limits
++	if cpu := limits.GetCpu(); cpu != "" {
++		out = append(out, &ateapipb.Limits{Name: "cpu", Quantity: cpu})
++	}
++	if mem := limits.GetMemory(); mem != "" {
++		out = append(out, &ateapipb.Limits{Name: "memory", Quantity: mem})
++	}
++	if len(out) == 0 {
++		return nil
++	}
++	return &ateapipb.Resources{Limits: out}
++}
++
++// EnsureActorTemplateWithImage creates an ActorTemplate using the specified container image, resource limits and optional environment variables.
++func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace, baseTemplate, targetAtespace, targetTemplate, image string, limits *v1alpha1.ResourceList, extraEnv ...map[string]string) (*ateapipb.ActorTemplate, error) {
+ 	existing, err := c.GetActorTemplate(ctx, targetAtespace, targetTemplate)
+ 	if err == nil && existing != nil {
+ 		return existing, nil
+@@ -290,6 +319,7 @@ func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace,
+ 	}
+ 
+ 	tmpl := BuildActorTemplate(targetAtespace, targetTemplate, image, envMap, nil, "")
++	tmpl.Resources = TemplateResources(limits)
+ 	req := &ateapipb.CreateActorTemplateRequest{
+ 		ActorTemplate: tmpl,
+ 	}
+diff --git a/internal/substrate/client_test.go b/internal/substrate/client_test.go
+index 2d88949..142e805 100644
+--- a/internal/substrate/client_test.go
++++ b/internal/substrate/client_test.go
+@@ -22,6 +22,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
++	"github.com/google/ax/pkg/apis/v1alpha1"
+ 	"google.golang.org/grpc"
+ 	"google.golang.org/grpc/codes"
+ 	"google.golang.org/grpc/status"
+@@ -140,3 +141,22 @@ func TestClient_DeleteActor_PropagatesRPCError(t *testing.T) {
+ 		t.Fatal("expected error, got nil")
+ 	}
+ }
++
++func TestTemplateResources(t *testing.T) {
++	if got := TemplateResources(nil); got != nil {
++		t.Errorf("TemplateResources(nil) = %v, want nil", got)
++	}
++	if got := TemplateResources(&v1alpha1.ResourceList{}); got != nil {
++		t.Errorf("TemplateResources(empty) = %v, want nil", got)
++	}
++	got := TemplateResources(&v1alpha1.ResourceList{Cpu: "500m", Memory: "256Mi"})
++	want := map[string]string{"cpu": "500m", "memory": "256Mi"}
++	if len(got.GetLimits()) != len(want) {
++		t.Fatalf("limits = %v, want %v", got.GetLimits(), want)
++	}
++	for _, l := range got.GetLimits() {
++		if want[l.GetName()] != l.GetQuantity() {
++			t.Errorf("limit %s = %q, want %q", l.GetName(), l.GetQuantity(), want[l.GetName()])
++		}
++	}
++}
+diff --git a/Dockerfile.task-runner-claude b/Dockerfile.task-runner-claude
+new file mode 100644
+index 0000000..42cb799
+--- /dev/null
++++ b/Dockerfile.task-runner-claude
+@@ -0,0 +1,39 @@
++# Extends AX's own task-runner image with git + the Claude Code CLI, so a
++# Task can run Claude non-interactively against a cloned Workspace repo.
++# Mirrors tag-transition-pipeline/consumer/Dockerfile's approach.
++
++FROM python:3.12-slim
++
++RUN apt-get update && apt-get install -y --no-install-recommends \
++    git \
++    curl \
++    ca-certificates \
++    openssh-client \
++    procps \
++    bash \
++    gnupg \
++    libcap2-bin \
++    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
++    && apt-get install -y --no-install-recommends nodejs \
++    && npm install -g @anthropic-ai/claude-code \
++    && apt-get purge -y curl gnupg && apt-get autoremove -y \
++    && rm -rf /var/lib/apt/lists/* /var/lib/apt/lists/partial
++
++RUN pip install --no-cache-dir google-antigravity
++
++# claude refuses --dangerously-skip-permissions as root. Agent Substrate's
++# gVisor sandbox strips CAP_SETUID/CAP_SETGID/CAP_CHOWN at runtime, so
++# dropping privileges after start (su/setuid) is not possible here -- the
++# container must start as this user. ax-task-runner's health probe binds
++# port 80 by default, which normally needs root; setcap grants that one
++# capability to the binary itself at build time so it still works non-root.
++RUN groupadd -g 1000 claudeuser && useradd -u 1000 -g claudeuser -m -s /bin/bash claudeuser
++
++COPY bin/linux_arm64/ax-task-runner /usr/local/bin/ax-task-runner
++COPY cmd/ax-task-runner/antigravity_bootstrap.py /usr/local/bin/antigravity_bootstrap.py
++RUN setcap 'cap_net_bind_service=+ep' /usr/local/bin/ax-task-runner
++
++USER claudeuser
++ENV HOME=/home/claudeuser
++
++ENTRYPOINT ["/usr/local/bin/ax-task-runner"]

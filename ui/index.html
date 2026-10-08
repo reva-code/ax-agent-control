@@ -1,0 +1,1042 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AX Agent Control</title>
+<style>
+:root{
+  --bg:#f5f6f8; --panel:#ffffff; --panel2:#eef0f3; --border:#dce0e6; --text:#16191d; --muted:#5d6876;
+  --run:#1a7f37; --run-bg:#e6f4ea; --pause:#9a6700; --pause-bg:#fff4d6;
+  --susp:#6639ba; --susp-bg:#efe9fb; --resume:#0969da; --resume-bg:#e3eefc;
+  --err:#cf222e; --err-bg:#ffebe9;
+  --accent:#0969da; --accent-ink:#ffffff; --shadow:0 1px 2px rgba(0,0,0,.05),0 4px 14px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0d1015; --panel:#151a21; --panel2:#1b212a; --border:#2b323d; --text:#e8edf2; --muted:#8c97a6;
+    --run:#3fb950; --run-bg:#12261a; --pause:#d29922; --pause-bg:#2a2210;
+    --susp:#a371f7; --susp-bg:#221a33; --resume:#58a6ff; --resume-bg:#10233d;
+    --err:#f85149; --err-bg:#2d1214;
+    --accent:#4c9aff; --accent-ink:#0d1015; --shadow:0 1px 2px rgba(0,0,0,.4);
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
+.mono,code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+button{font:inherit;font-size:13px;border:1px solid var(--border);background:var(--panel);color:var(--text);border-radius:7px;padding:5px 12px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button:disabled{opacity:.45;cursor:default}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+button.ghost{background:transparent}
+button[hidden]{display:none}
+
+header{background:var(--panel);border-bottom:1px solid var(--border);padding:16px 28px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+.brand h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.01em}
+.brand p{margin:2px 0 0;color:var(--muted);font-size:13px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{border:1px solid var(--border);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--muted);background:var(--panel2)}
+.chip.mock{color:var(--pause);border-color:var(--pause);background:var(--pause-bg)}
+.chip.live{color:var(--run);border-color:var(--run);background:var(--run-bg);font-weight:600}
+.chip.err{color:var(--err);border-color:var(--err);background:var(--err-bg)}
+.spacer{flex:1}
+.sessions-link{font-size:13px;border:1px solid var(--accent);color:var(--accent);border-radius:7px;padding:5px 12px;text-decoration:none;font-weight:600}
+
+main{padding:22px 28px 10px;display:flex;flex-direction:column;gap:18px;max-width:1440px;margin:0 auto}
+
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.kpi{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 16px}
+.kpi .v{font-size:26px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.kpi .l{font-size:12px;color:var(--muted)}
+
+.legend{display:flex;gap:22px;flex-wrap:wrap;font-size:13px;color:var(--muted)}
+.legend b{color:var(--text)}
+
+.lanes{display:grid;grid-template-columns:repeat(var(--lanes,3),minmax(0,1fr));gap:14px}
+.lane{background:var(--panel2);border:1px solid var(--border);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px}
+.lane-head{display:flex;justify-content:space-between;align-items:baseline;padding:0 2px}
+.lane-head .node{font-weight:650;font-size:15px}
+.lane-head .sub{font-size:12px;color:var(--muted)}
+.lane .workers{display:grid;grid-template-columns:repeat(var(--wcols,1),minmax(0,1fr));gap:10px}
+.pending-slot{display:flex;flex-direction:column;gap:8px}
+.pending-slot:empty{display:none}
+
+.examples{display:flex;flex-wrap:wrap;gap:5px}
+.examples button{font-size:11.5px;padding:2px 8px;border-radius:999px;color:var(--muted)}
+
+.worker{border:1px solid var(--border);border-radius:9px;background:var(--panel);padding:8px;transition:box-shadow .4s;min-width:0}
+.worker.flash{box-shadow:0 0 0 2px var(--resume)}
+.worker-head{font-size:11.5px;color:var(--muted);display:flex;justify-content:space-between;gap:6px;margin-bottom:6px}
+.worker-head .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slot{display:flex;flex-direction:column;gap:8px;min-height:30px}
+.slot:empty::before{content:"warm · ready for an agent";font-size:12px;color:var(--muted);opacity:.75;padding:6px 2px}
+
+.tray{border:1.5px dashed var(--border);border-radius:12px;padding:10px 12px;background:var(--panel2)}
+.tray-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.tray-head span{font-size:12px;color:var(--muted)}
+#tray-slot{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;min-height:36px}
+#tray-slot:empty::before{content:"No suspended agents";font-size:12px;color:var(--muted);opacity:.75;padding:6px 2px}
+
+.card{background:var(--panel);border:1px solid var(--border);border-left:4px solid var(--run);border-radius:9px;padding:10px 12px;box-shadow:var(--shadow);cursor:pointer;display:flex;flex-direction:column;gap:6px;min-width:0}
+.card.selected{outline:2px solid var(--accent);outline-offset:1px}
+.card[data-tone=pause]{border-left-color:var(--pause)}
+.card[data-tone=susp]{border-left-color:var(--susp)}
+.card[data-tone=resume]{border-left-color:var(--resume)}
+.card[data-tone=err]{border-left-color:var(--err)}
+.card[data-tone=pause] .body,.card[data-tone=susp] .body{opacity:.6}
+.card-top{display:flex;align-items:center;gap:8px;min-width:0}
+.card .name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{flex:none;font-size:10.5px;font-weight:700;letter-spacing:.04em;padding:1px 8px;border-radius:999px;color:var(--run);background:var(--run-bg)}
+.badge[data-tone=pause]{color:var(--pause);background:var(--pause-bg)}
+.badge[data-tone=susp]{color:var(--susp);background:var(--susp-bg)}
+.badge[data-tone=resume]{color:var(--resume);background:var(--resume-bg)}
+.badge[data-tone=err]{color:var(--err);background:var(--err-bg)}
+.badge.pulse{animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.45}}
+.task{font-size:13px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.segs{display:flex;gap:3px}
+.seg{flex:1;height:5px;border-radius:3px;background:var(--border);overflow:hidden}
+.seg i{display:block;height:100%;width:0;background:var(--run);transition:width .4s}
+.seg.active i{width:100%;background:repeating-linear-gradient(90deg,var(--run) 0 10px,transparent 10px 16px);background-size:32px 100%;animation:march 1s linear infinite}
+.card[data-tone=pause] .seg.active i,.card[data-tone=susp] .seg.active i{animation:none;width:50%;background:var(--run)}
+@keyframes march{to{background-position:32px 0}}
+.step-label{font-size:12px;color:var(--muted)}
+.step-label.done{color:var(--run);font-weight:600}
+.step-label.err{color:var(--err)}
+.activity{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.meta{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;gap:8px}
+.snap{font-size:12px;color:var(--muted)}
+.actions,.resume-on{display:flex;gap:6px;flex-wrap:wrap}
+
+.bottom{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:14px}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 16px;min-width:0}
+.panel h2{font-size:14px;margin:0 0 10px;font-weight:650}
+.panel h3{font-size:12px;margin:14px 0 6px;font-weight:650;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.panel .empty{color:var(--muted);font-size:13px}
+.prompt{font-size:13px;background:var(--panel2);border-radius:7px;padding:8px 10px;margin:0}
+.history{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.hop{border:1px solid var(--border);border-radius:7px;padding:4px 8px;background:var(--panel2)}
+.hop .n{font-weight:600;font-size:12px}
+.hop.current{border-color:var(--run)}
+.arrow{font-size:11px;color:var(--muted);text-align:center;line-height:1.25}
+.arrow .shift{color:var(--resume);font-weight:600}
+.steplist{margin:0;padding:0;list-style:none;font-size:13px}
+.steplist li{padding:2px 0;color:var(--muted)}
+.steplist li.done{color:var(--text)}
+.steplist li.active{color:var(--run);font-weight:600}
+.transcript{background:var(--panel2);border-radius:7px;padding:8px 10px;max-height:220px;overflow:auto;margin:0;white-space:pre-wrap;word-break:break-word}
+#events{max-height:300px;overflow:auto;margin:0;padding:0;list-style:none}
+#events li{font-size:12px;padding:5px 0;border-bottom:1px solid var(--border);display:grid;grid-template-columns:62px 130px 1fr;gap:8px}
+#events .t{color:var(--muted)}
+#events .a{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#events .shift{color:var(--resume);font-weight:600}
+#events .done{color:var(--run);font-weight:600}
+#events .error{color:var(--err)}
+footer{color:var(--muted);font-size:12px;text-align:center;padding:6px 16px 22px}
+
+.ops{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px}
+.ops .row{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:6px 0}
+.ops label{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.ops input[type=number]{width:64px;font:inherit;font-size:13px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)}
+.ops input[type=range]{width:130px;accent-color:var(--accent)}
+.ops label b{color:var(--text);min-width:34px;font-variant-numeric:tabular-nums}
+.hint{font-size:12px;color:var(--muted);margin:8px 0 0}
+.admission{font-size:12.5px;color:var(--muted)}
+.tasklist{max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:6px 10px;background:var(--bg);margin:6px 0}
+.tgroup{margin:6px 0 8px}
+.tgroup-head{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:650;color:var(--muted);margin-bottom:3px}
+.tgroup-head button{font-size:11px;padding:1px 7px}
+.task-item{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;padding:2px 0;cursor:pointer}
+.task-item input{margin-top:3px}
+.tcount{font-size:12.5px;color:var(--muted)}
+.custom-label{display:block;font-size:12px;color:var(--muted);margin:8px 0 4px}
+.custom-label code{font-size:11.5px}
+#t-custom{width:100%;font:inherit;font-size:13px;border:1px solid var(--border);border-radius:7px;padding:7px 8px;background:var(--bg);color:var(--text);resize:vertical}
+#results-panel h2{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+#results-panel h2 span{font-size:12.5px;font-weight:400;color:var(--muted)}
+.rtable{width:100%;border-collapse:collapse;font-size:12.5px}
+.rtable th{text-align:left;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--border)}
+.rtable td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+.rtable td.task{max-width:420px}
+.rtable .ok{color:var(--run);font-weight:600}
+.rtable .bad{color:var(--err);font-weight:600}
+.rtable .warn{color:var(--pause)}
+.rtable a{color:var(--accent)}
+.rtable .links{display:flex;flex-direction:column;gap:3px;white-space:nowrap}
+.rtable .links button{font-size:11.5px;padding:1px 7px;align-self:flex-start}
+.rdiff{background:var(--panel2);border-radius:6px;padding:8px 10px;margin:6px 0 0;font-size:11.5px;white-space:pre;overflow:auto;max-height:260px}
+.rdiff .add{color:#3fb950}
+.rdiff .del{color:#f85149}
+.admission b{color:var(--text)}
+.worker-head .booked{display:flex;align-items:center;gap:6px;flex:none}
+.worker-head .booked i{display:inline-block;width:44px;height:5px;border-radius:3px;background:var(--panel2);overflow:hidden}
+.worker-head .booked i b{display:block;height:100%;background:var(--accent)}
+.nodebar{margin:8px 0}
+.nodebar .top{display:flex;justify-content:space-between;font-size:12.5px}
+.nodebar .top b{font-weight:600}
+.bar{height:8px;border-radius:4px;background:var(--panel2);overflow:hidden;margin-top:4px}
+.bar i{display:block;height:100%;background:var(--accent);transition:width .6s}
+.density{font-size:13px;margin:10px 0 0;line-height:1.5}
+.density b{font-size:15px}
+.kind{flex:none;font-size:9.5px;font-weight:700;letter-spacing:.05em;padding:0 6px;border-radius:4px;border:1px solid var(--border);color:var(--muted)}
+.kind.claude{color:var(--accent);border-color:var(--accent)}
+.kind.coder{color:#58a6ff;border-color:#58a6ff}
+.kind.tester{color:#3fb950;border-color:#3fb950}
+.kind.docs{color:#d29922;border-color:#d29922}
+.verdict{font-size:12px;font-weight:600}
+.verdict.ok{color:var(--run)}
+.verdict.warn{color:var(--pause)}
+body.compact .card .verdict{font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.detail-actions{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 0}
+#done-slot{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;min-height:36px}
+#done-slot:empty::before{content:"Nothing finished yet";font-size:12px;color:var(--muted);opacity:.75;padding:6px 2px}
+/* Compact tiles once there are many agents */
+body.compact .card{padding:6px 8px;gap:4px;box-shadow:none}
+body.compact .card .task,body.compact .card .activity,body.compact .card .meta,body.compact .card .snap,body.compact .card .step-label{display:none}
+/* Compact tiles keep their buttons, just smaller. */
+body.compact .card .actions,body.compact .card .resume-on{gap:4px}
+body.compact .card .actions button{font-size:11px;padding:2px 7px}
+body.compact .card-top{flex-wrap:wrap;row-gap:3px}
+body.compact .card .name{font-size:11px;flex-basis:100%}
+body.compact .slot{flex-direction:row;flex-wrap:wrap}
+body.compact .slot .card{width:calc(50% - 4px)}
+body.compact #tray-slot,body.compact #done-slot{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+@media (max-width:980px){ .ops{grid-template-columns:1fr} }
+
+@media (max-width:980px){
+  .lanes,.bottom{grid-template-columns:1fr}
+  .lane .workers{grid-template-columns:1fr}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  header,main{padding-left:16px;padding-right:16px}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>AX Agent Control</h1>
+    <p>AI coding agents in isolated sandboxes on Kubernetes · Google AX + Agent Substrate</p>
+  </div>
+  <div class="chips" id="chips"></div>
+  <div class="spacer"></div>
+  <a href="/sessions" target="_blank" class="sessions-link">Sessions ↗</a>
+  <button id="reset" class="ghost" hidden>Reset</button>
+</header>
+
+<main>
+  <section class="kpis">
+    <div class="kpi"><div class="v" id="k-total">0</div><div class="l" id="k-total-l">agents</div></div>
+    <div class="kpi"><div class="v" id="k-awake">0</div><div class="l" id="k-awake-l">working now</div></div>
+    <div class="kpi"><div class="v" id="k-waiting">0</div><div class="l">waiting for your review · held in storage, no CPU or RAM</div></div>
+    <div class="kpi"><div class="v" id="k-done">0</div><div class="l">tasks completed</div></div>
+  </section>
+
+  <section class="ops">
+    <div class="panel" id="batch-panel">
+      <h2>1 · Choose tasks</h2>
+      <div class="row">
+        <button id="t-all" class="ghost">Select all</button>
+        <button id="t-none" class="ghost">Clear</button>
+        <span class="tcount" id="t-count"></span>
+      </div>
+      <div class="tasklist" id="tasklist"><p class="empty">Loading tasks…</p></div>
+      <label class="custom-label" for="t-custom">Your own tasks, one per line. Start a line with <code>tests:</code> or <code>docs:</code> to choose the role; otherwise it is picked from the wording.</label>
+      <textarea id="t-custom" rows="3" placeholder="e.g. Add a mask_phone(number) function to app.py that keeps only the last 4 digits"></textarea>
+      <div class="row">
+        <label><input id="s-push" type="checkbox"> Push approved changes to GitHub (one branch per task)</label>
+        <label><input id="b-simulate" type="checkbox"> Simulate (free, no Claude calls)</label>
+        <label title="How long an agent that is waiting for review stays visibly in its pod before it is suspended to storage. 0 suspends it at once.">Demo pace: suspend waiting agents after <input id="s-park" type="number" min="0" max="120" step="5" style="width:56px"> s</label>
+      </div>
+      <div class="row">
+        <button id="b-run" class="primary">Run agents</button>
+        <button id="b-approve" class="primary">Approve all waiting</button>
+        <button id="b-clear" class="ghost">Clear finished</button>
+      </div>
+      <p class="hint"><span class="admission"><b>One agent per task.</b> Each is a Claude Code session on its own copy of the repo, sized by role (coder / test writer 1 GiB · docs writer 768 MiB). Substrate starts agents only where they fit; the rest wait. Each agent shows its diff, gets a read-only AI review, then waits for yours, suspended to storage with no CPU or RAM. Approve it and it finishes (and pushes its branch if enabled). Results appear at the bottom of the page.</span></p>
+    </div>
+    <div class="panel">
+      <h2>Utilization</h2>
+      <div id="node-usage"></div>
+      <p id="density" class="density"></p>
+    </div>
+  </section>
+
+  <div class="legend">
+    <span><b>Pause</b>: freezes the agent where it is; it resumes on the same node</span>
+    <span><b>Suspend</b>: saves the agent's full memory to shared storage and frees the machine; you choose the node it resumes on</span>
+  </div>
+
+  <section class="lanes" id="lanes"></section>
+
+  <section class="tray">
+    <div class="tray-head"><b>Snapshot storage</b><span>suspended agents use no compute; their complete state is saved here</span></div>
+    <div id="tray-slot"></div>
+  </section>
+
+  <section class="tray">
+    <div class="tray-head"><b>Finished</b><span>sandbox deleted, slot freed for the next agent</span></div>
+    <div id="done-slot"></div>
+  </section>
+
+  <section class="bottom">
+    <div class="panel" id="detail"></div>
+    <div class="panel"><h2>Activity</h2><ul id="events"></ul></div>
+  </section>
+  <section class="panel" id="results-panel">
+    <h2>Results <span id="results-summary"></span></h2>
+    <div id="results"><p class="empty">Results appear here as agents finish: what each one changed, the AI review, and a link to its branch.</p></div>
+  </section>
+</main>
+<footer id="footer"></footer>
+
+<script>
+const MODE = new URLSearchParams(location.search).has('mock') || location.protocol === 'file:' ? 'mock' : 'live';
+const REPO = 'tag-transition-target';
+const MOCK_STEPS = ['Clone repo', 'Claude working', 'Commit', 'Push to GitHub'];
+
+const EXAMPLES = [
+  'Implement call_webhook in app.py as its TODO describes: retry up to 3 times with a short delay. Standard library only.',
+  'Implement is_valid_ticket_id in app.py as its docstring describes.',
+  'Add a summarize_ticket(ticket_id, title, tags) function to app.py that returns "[ID] Title (tags: a, b)", omitting the tags part when there are none.',
+  'Write unit tests for app.py in a new test_app.py using unittest, run them with python3 -m unittest, and make sure they pass.',
+  'Add a days_since(iso_date) function to app.py that returns the number of days between a YYYY-MM-DD date and today.',
+  'Add a "Usage" section to README.md with a short example for each function in app.py.',
+  'Add type hints to every function in app.py without changing behaviour.',
+  'Add a priority_label(score) function to app.py that maps 0-3 to "low", 4-6 to "medium" and 7-10 to "high", raising ValueError otherwise.',
+];
+const SHORT = ['Retry logic for call_webhook', 'Implement is_valid_ticket_id', 'Add summarize_ticket', 'Write unit tests',
+               'Add days_since', 'README usage section', 'Add type hints', 'Add priority_label'];
+
+const hex = n => [...crypto.getRandomValues(new Uint8Array(n))].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, n);
+const rand = (a, b) => Math.round(a + Math.random() * (b - a));
+const STOP = new Set(['implement', 'a', 'an', 'the', 'to', 'in', 'of', 'for', 'and', 'with', 'every', 'up', 'add', 'write', 'new', 'file']);
+// Name agents after the function a prompt names (call_webhook → call-webhook), else its first key words.
+function slugFor(prompt) {
+  const text = prompt.toLowerCase().replace(/\.[a-z]+\b/g, '');
+  const ident = (text.match(/[a-z0-9]+(?:_[a-z0-9]+)+/) || [])[0];
+  let slug = ident ? ident + (/test/.test(text) && !ident.includes('test') ? '-tests' : '')
+    : (() => { const w = text.match(/[a-z0-9]+/g) || ['task']; const k = w.filter(x => !STOP.has(x)).slice(0, 3); return (k.length ? k : w.slice(0, 3)).join('-'); })();
+  slug = slug.replace(/_+/g, '-').replace(/-+/g, '-');
+  if (slug.length > 30) slug = slug.slice(0, 30).replace(/-[^-]*$/, '');
+  return slug || 'task';
+}
+
+// ---------- Live backend: ui/server.py drives AX + Substrate ----------
+class LiveBackend {
+  async state() {
+    const r = await fetch('/api/state', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`backend returned ${r.status}`);
+    return r.json();
+  }
+  async create(node, prompt, role) {
+    const r = await fetch('/api/agents', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node, prompt, role }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || `backend returned ${r.status}`);
+    return body.name;
+  }
+  async action(name, act, node) {
+    await fetch(`/api/agents/${encodeURIComponent(name)}/${act}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node }),
+    });
+  }
+}
+
+// ---------- Mock backend: same state shape, simulated in the browser ----------
+const MOCK_NODES = [
+  { name: 'kind-worker', workers: ['pool-kind-worker-6584d-f7hqt', 'pool-kind-worker-6584d-n47hv', 'pool-kind-worker-6584d-sgbzq'] },
+  { name: 'kind-worker2', workers: ['pool-kind-worker2-5f78d-fqfcj', 'pool-kind-worker2-5f78d-rd55s', 'pool-kind-worker2-5f78d-w5frw'] },
+];
+class MockBackend {
+  constructor() { this.reset(); }
+  reset() {
+    (this.timers || []).forEach(clearTimeout);
+    Object.assign(this, { timers: [], agents: [], events: [], seq: 0, stats: { completed: 0, lastResumeMs: null, error: null } });
+  }
+  later(ms, fn) { this.timers.push(setTimeout(fn, ms)); }
+  ev(agent, msg, kind = 'log') { this.events.push({ id: ++this.seq, t: Date.now(), agent, msg, kind }); }
+  get(name) { return this.agents.find(a => a.name === name); }
+  load(pod) { return this.agents.filter(a => a.worker?.pod === pod).length; }
+  pick(nodeFilter) {
+    const pods = MOCK_NODES.filter(nodeFilter).flatMap(n => n.workers.map(pod => ({ pod, node: n.name })));
+    return pods.sort((x, y) => this.load(x.pod) - this.load(y.pod))[0];
+  }
+  async state() {
+    return {
+      mode: 'mock', cluster: 'kind (simulated)', nodes: MOCK_NODES, stats: this.stats, events: this.events.slice(-100),
+      agents: this.agents.map(a => ({ ...a, steps: MOCK_STEPS, stateSinceMs: Date.now() - a._since })),
+    };
+  }
+  async create(node, prompt) {
+    let name = 'agent-' + slugFor(prompt);
+    for (let i = 2; this.get(name); i++) name = `agent-${slugFor(prompt)}-${i}`;
+    const file = (prompt.match(/[\w./-]+\.(py|md|txt|json|ya?ml)\b/) || ['app.py'])[0];
+    const a = {
+      name, prompt, branch: `ax/${name.slice(6)}`, nodeHint: node, phase: 'starting', launchStep: 'Creating sandbox',
+      state: 'SUSPENDED', worker: null, history: [], step: 0, activity: '', transcript: [], done: false, result: null, kind: 'claude-push', batch: false, failed: null,
+      snapshot: null, via: null, activeMs: 0, pending: null, _since: Date.now(), _stepMs: 0,
+      _durs: [3500, rand(12000, 16000), 2500, 3500],
+      _script: [`tool: Read ${file}`, `tool: ${/test/i.test(prompt) ? 'Write test_app.py' : 'Edit ' + file}`,
+                'tool: Bash python3 -m unittest -v', 'Claude: Done. The change is implemented and the tests pass.'],
+    };
+    this.agents.push(a);
+    this.ev(name, 'task assigned · starting agent');
+    this.later(900, () => { a.launchStep = 'Applying egress policy'; this.ev(name, 'egress limited to github.com + api.anthropic.com'); });
+    this.later(1600, () => {
+      a.worker = this.pick(n => n.name === node);
+      Object.assign(a, { phase: 'live', launchStep: '', state: 'RUNNING', _since: Date.now() });
+      a.history.push({ ...a.worker, via: 'start' });
+      this.ev(name, `running on ${a.worker.pod} (${a.worker.node})`);
+    });
+    return name;
+  }
+  async action(name, act, node) {
+    const a = this.get(name);
+    if (!a || a.pending) return;
+    const set = state => Object.assign(a, { state, pending: null, _since: Date.now() });
+    if (act === 'dismiss') { this.agents = this.agents.filter(x => x !== a); this.ev(name, 'dismissed · sandbox deleted'); return; }
+    a.pending = act;
+    if (act === 'pause') {
+      this.later(rand(500, 800), () => {
+        a.snapshot = { kind: 'node-local', where: a.worker.node }; a.via = 'pause'; set('PAUSED');
+        this.ev(name, `paused · snapshot kept on ${a.worker.node}`);
+      });
+    } else if (act === 'suspend') {
+      this.later(rand(1100, 1600), () => {
+        a.snapshot = { kind: 'durable', where: 'snapshot storage' }; a.via = 'suspend'; a.worker = null; set('SUSPENDED');
+        this.ev(name, 'suspended · full snapshot saved to storage · worker freed');
+      });
+    } else if (act === 'resume') {
+      const prev = a.history[a.history.length - 1];
+      const target = a.state === 'PAUSED' ? a.worker
+        : this.pick(n => (node ? n.name === node : n.name !== prev.node));
+      const ms = rand(280, 480);
+      this.later(ms, () => {
+        a.worker = target; a.snapshot = null; a.history.push({ ...target, via: a.via }); set('RUNNING');
+        this.stats.lastResumeMs = ms;
+        if (target.node !== prev.node) this.ev(name, `resumed on ${target.node} · moved from ${prev.node}, same step`, 'shift');
+        else this.ev(name, `resumed on the same worker (${target.pod}) · same step`);
+      });
+    }
+  }
+  tick(dt) {
+    for (const a of this.agents) {
+      if (a.state !== 'RUNNING' || a.phase !== 'live' || a.done) continue;
+      a.activeMs += dt;
+      a._stepMs += dt;
+      if (a.step === 1) {
+        const n = Math.min(a._script.length, Math.floor(a._stepMs / a._durs[1] * (a._script.length + 0.5)));
+        while (a.transcript.length < n) { a.transcript.push(a._script[a.transcript.length]); a.activity = a.transcript[a.transcript.length - 1]; }
+      }
+      if (a._stepMs < a._durs[a.step]) continue;
+      a._stepMs = 0;
+      if (a.step === MOCK_STEPS.length - 1) {
+        a.done = true; a.result = `pushed ${hex(7)} → ${a.branch}`; a.step = MOCK_STEPS.length; this.stats.completed++;
+        this.ev(a.name, `done · ${a.result}`, 'done');
+      } else {
+        a.step++; a.activity = MOCK_STEPS[a.step]; this.ev(a.name, MOCK_STEPS[a.step].toLowerCase());
+      }
+    }
+  }
+}
+
+// ---------- UI ----------
+const backend = MODE === 'live' ? new LiveBackend() : new MockBackend();
+const $ = id => document.getElementById(id);
+let selected = null;
+let current = { nodes: [], agents: [], events: [], stats: {} };
+let topoKey = '';
+let lastEventId = 0;
+let fetchError = null;
+const cards = {};
+const slots = {};
+const laneSlots = {};
+const optimistic = {};   // name -> pending action until the backend reports it
+
+function buildLanes(nodes) {
+  const lanes = $('lanes');
+  lanes.innerHTML = '';
+  lanes.style.setProperty('--lanes', Math.max(1, nodes.length));
+  for (const k in slots) delete slots[k];
+  for (const k in laneSlots) delete laneSlots[k];
+  for (const { name: node, workers } of nodes) {
+    const lane = document.createElement('div');
+    lane.className = 'lane';
+    lane.dataset.node = node;
+    lane.style.setProperty('--wcols', nodes.length === 1 ? Math.min(workers.length, 3) : 1);
+    lane.innerHTML = `
+      <div class="lane-head"><span class="node"></span><span class="sub" data-count></span></div>
+      <div class="pending-slot"></div>
+      <div class="workers"></div>`;
+    lane.querySelector('.node').textContent = node;
+    laneSlots[node] = lane.querySelector('.pending-slot');
+    const box = lane.querySelector('.workers');
+    for (const pod of workers) {
+      const w = document.createElement('div');
+      w.className = 'worker';
+      w.innerHTML = `<div class="worker-head"><span class="mono"></span><span>worker</span></div><div class="slot"></div>`;
+      w.querySelector('.mono').textContent = `pod/${pod}`;
+      w.querySelector('.mono').title = pod;
+      box.appendChild(w);
+      slots[pod] = w.querySelector('.slot');
+    }
+    lanes.appendChild(lane);
+  }
+  // Re-home existing cards into the new DOM.
+  for (const a of current.agents) if (cards[a.name]) place(a, false);
+}
+
+function makeCard(a) {
+  const el = document.createElement('div');
+  el.className = 'card';
+  el.innerHTML = `
+    <div class="card-top"><span class="badge"></span><span class="kind"></span><span class="name mono"></span></div>
+    <div class="body">
+      <div class="task"></div>
+      <div class="segs">${a.steps.map(() => '<div class="seg"><i></i></div>').join('')}</div>
+      <div class="step-label"></div>
+      <div class="verdict" hidden></div>
+      <div class="activity mono"></div>
+    </div>
+    <div class="meta"><span class="where mono"></span><span class="time"></span></div>
+    <div class="snap"></div>
+    <div class="actions">
+      <button data-act="pause">Pause</button>
+      <button data-act="suspend">Suspend</button>
+      <button data-act="approve" class="primary">Approve</button>
+      <button data-act="resume" class="primary">Resume</button>
+      <span class="resume-on"></span>
+      <button data-act="dismiss" class="ghost">Dismiss</button>
+    </div>`;
+  el.querySelector('.name').textContent = a.name;
+  const kind = el.querySelector('.kind');
+  const ROLE_LABEL = { coder: 'CODER', tester: 'TESTS', docs: 'DOCS', sim: 'SIM' };
+  kind.textContent = a.kind === 'sim' && a.role !== 'sim' ? `${ROLE_LABEL[a.role]} · SIM` : (ROLE_LABEL[a.role] || (a.kind === 'sim' ? 'SIM' : 'CLAUDE'));
+  if (a.role && a.role !== 'sim') kind.classList.add(a.role);
+  el.addEventListener('click', e => {
+    const btn = e.target.closest('button');
+    const act = btn?.dataset.act === 'resume-on' ? 'resume' : btn?.dataset.act;
+    selected = a.name;
+    if (act === 'dismiss' && !e.target.closest('button').classList.contains('ghost-done')
+        && !confirm(`Stop ${a.name}? Its sandbox is deleted and any unpushed work is lost.`)) return;
+    if (act) {
+      optimistic[a.name] = act;
+      backend.action(a.name, act, btn.dataset.node).finally(refresh);
+    }
+    render();
+  });
+  return el;
+}
+
+const fmt = ms => { const s = Math.floor((ms || 0) / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const PENDING_LABEL = { pause: 'PAUSING', suspend: 'SUSPENDING', resume: 'RESUMING', dismiss: 'REMOVING', start: 'STARTING', archive: 'CLEANING UP', approve: 'APPROVED' };
+
+function view(a) {
+  const pending = a.pending || optimistic[a.name] || null;
+  let label = a.state || 'STARTING', tone = 'run';
+  if (pending) label = PENDING_LABEL[pending];
+  else if (a.phase === 'starting') label = 'STARTING';
+  else if (a.phase === 'failed' || a.failed) label = 'FAILED';
+  else if (a.done) label = 'DONE';
+  else if (a.reviewing && !a.approved && a.state !== 'RUNNING') label = 'WAITING FOR REVIEW';
+  else if (a.approved) label = 'APPROVED';
+  else if (a.phase === 'queued') label = 'QUEUED';
+  if (label === 'FAILED') tone = 'err';
+  else if (/PAUS/.test(label)) tone = 'pause';
+  else if (/SUSPEND|QUEUED|REVIEW/.test(label)) tone = 'susp';
+  else if (label === 'APPROVED') tone = 'resume';
+  else if (/RESUM|STARTING|REMOV/.test(label)) tone = 'resume';
+  return { pending, label, tone };
+}
+
+function updateCard(a) {
+  const el = cards[a.name];
+  const v = view(a);
+  el.dataset.tone = v.tone;
+  el.classList.toggle('selected', a.name === selected);
+  const badge = el.querySelector('.badge');
+  badge.textContent = v.label;
+  badge.dataset.tone = v.tone;
+  badge.classList.toggle('pulse', /ING$/.test(v.label) && v.label !== 'RUNNING');
+  el.querySelector('.task').textContent = a.prompt;
+  el.querySelector('.task').title = a.prompt;
+
+  const working = a.phase === 'live' && !a.done && !a.failed;
+  el.querySelectorAll('.seg').forEach((seg, i) => {
+    const done = a.done || i < a.step;
+    seg.classList.toggle('active', working && i === a.step);
+    seg.querySelector('i').style.width = done ? '100%' : '';
+  });
+
+  const label = el.querySelector('.step-label');
+  label.className = 'step-label';
+  if (a.phase === 'starting') label.textContent = `${a.launchStep || 'Starting'}…`;
+  else if (a.failed) { label.textContent = `✗ ${a.failed}`; label.classList.add('err'); }
+  else if (a.done) { label.textContent = `✓ ${a.result}`; label.classList.add('done'); }
+  const ver = el.querySelector('.verdict');
+  ver.hidden = !a.verdict;
+  if (a.verdict) {
+    const ok = /^approve/i.test(a.verdict);
+    ver.className = `verdict ${ok ? 'ok' : 'warn'}`;
+    ver.textContent = `AI review: ${a.verdict}`;
+    ver.title = a.verdict;
+  }
+  else if (a.phase === 'queued') label.textContent = 'waiting for a turn';
+  else if (a.reviewing && !a.approved && a.state === 'RUNNING') label.textContent = `step ${a.steps.length - 1}/${a.steps.length}: finishing up`;
+  else if (a.reviewing && !a.approved) label.textContent = `diff ready · waiting for your review ${fmt(Date.now() - a.reviewSince * 1000)}`;
+  else label.textContent = `step ${Math.min(a.step + 1, a.steps.length)}/${a.steps.length}: ${a.steps[Math.min(a.step, a.steps.length - 1)]}`;
+  const act = el.querySelector('.activity');
+  act.textContent = working && a.activity !== a.steps[a.step] ? (a.activity || '') : '';
+  act.hidden = !act.textContent;
+
+  el.querySelector('.where').textContent = a.worker ? `${a.worker.pod.slice(-5)} · ${a.worker.node}`
+    : a.phase === 'starting' ? 'scheduling…' : a.phase === 'archived' ? 'sandbox deleted' : 'in storage';
+  const idle = /^(PAUSED|SUSPENDED)$/.test(a.state) && a.phase === 'live' ? ` · ${a.state.toLowerCase()} ${fmt(a.stateSinceMs)}` : '';
+  el.querySelector('.time').textContent = `⏱ ${fmt(a.activeMs)}${idle}`;
+
+  const snap = el.querySelector('.snap');
+  snap.textContent = !a.snapshot ? '' : a.snapshot.kind === 'durable'
+    ? `full snapshot in ${a.snapshot.where}` : `snapshot held on ${a.snapshot.where}`;
+  snap.hidden = !a.snapshot;
+
+  const busy = !!v.pending;
+  const finished = !!(a.done || a.failed) || a.phase === 'failed' || a.phase === 'archived';
+  // A suspended agent's snapshot is in shared storage, so offer every node; a
+  // paused one can only return to the node holding its snapshot.
+  const pickNode = a.phase === 'live' && a.state === 'SUSPENDED' && current.nodes.length > 1 && !a.reviewing && (a.hold || !a.batch);
+  const resumeOn = el.querySelector('.resume-on');
+  const nodeKey = pickNode ? current.nodes.map(n => n.name).join(',') : '';
+  if (resumeOn.dataset.key !== nodeKey) {
+    resumeOn.dataset.key = nodeKey;
+    resumeOn.innerHTML = '';
+    const last = a.history[a.history.length - 1]?.node;
+    for (const n of pickNode ? current.nodes : []) {
+      const b = document.createElement('button');
+      b.dataset.act = 'resume-on';
+      b.dataset.node = n.name;
+      b.textContent = `Resume on ${n.name}`;
+      if (n.name !== last) b.className = 'primary';
+      resumeOn.appendChild(b);
+    }
+  }
+  resumeOn.querySelectorAll('button').forEach(b => { b.disabled = busy; });
+  const show = {
+    approve: a.reviewing && !a.approved && !finished && a.state !== 'RUNNING',
+    pause: working && a.state === 'RUNNING' && a.phase !== 'archived' && !a.reviewing,
+    suspend: working && (a.state === 'RUNNING' || a.state === 'PAUSED') && !(a.reviewing && !a.approved),
+    resume: a.phase === 'live' && !a.reviewing && (a.state === 'PAUSED' || (a.state === 'SUSPENDED' && !pickNode && (a.hold || !a.batch))),
+    dismiss: a.phase !== 'deleting',
+  };
+  const dismiss = el.querySelector('[data-act=dismiss]');
+  dismiss.textContent = finished ? 'Dismiss' : 'Stop';
+  dismiss.classList.toggle('ghost-done', finished);
+  el.querySelectorAll('.actions > button').forEach(b => { b.hidden = !show[b.dataset.act]; b.disabled = busy; });
+}
+
+// FLIP: animate a card from its old spot to its new parent.
+function place(a, animate) {
+  const el = cards[a.name];
+  const fallbackLane = laneSlots[a.nodeHint] || Object.values(laneSlots)[0];
+  let target;
+  if (a.phase === 'archived') target = $('done-slot');
+  else if (a.worker && slots[a.worker.pod]) target = slots[a.worker.pod];
+  else if (a.phase === 'queued' || (a.phase === 'live' && /SUSPEND|RESUM/.test(a.state))) target = $('tray-slot');
+  else target = fallbackLane;
+  if (!target || el.parentElement === target) return;
+  const first = el.isConnected ? el.getBoundingClientRect() : null;
+  target.appendChild(el);
+  if (!animate || !first) return;
+  const last = el.getBoundingClientRect();
+  el.animate([
+    { transform: `translate(${first.left - last.left}px, ${first.top - last.top}px)` },
+    { transform: 'none' },
+  ], { duration: 750, easing: 'cubic-bezier(.2,.8,.2,1)' });
+  const box = target.closest('.worker');
+  if (box) { box.classList.add('flash'); setTimeout(() => box.classList.remove('flash'), 1400); }
+}
+
+function renderDetail() {
+  const a = selected && current.agents.find(x => x.name === selected);
+  const d = $('detail');
+  if (!a) {
+    d.innerHTML = `<h2>Agent details</h2><p class="empty">Assign a task to a node to start an agent. Select an agent to see its live transcript and every machine it has run on.</p>`;
+    d.dataset.agent = '';
+    return;
+  }
+  const hops = a.history.map((h, i) => {
+    let arrow = '';
+    if (i > 0) {
+      const prev = a.history[i - 1];
+      const note = h.node !== prev.node ? '<span class="shift">moved node ↗</span>'
+        : h.pod !== prev.pod ? '<span class="shift">moved pod ↗</span>' : 'same worker';
+      arrow = `<div class="arrow">${h.via} → resume<br>${note}</div>`;
+    }
+    const cur = i === a.history.length - 1 && a.worker ? ' current' : '';
+    return `${arrow}<div class="hop${cur}"><div class="n"></div><div class="mono"></div></div>`;
+  }).join('');
+  const tail = !a.worker && a.phase === 'live' && /SUSPEND/.test(a.state)
+    ? `<div class="arrow">suspend</div><div class="hop"><div class="n">snapshot storage</div><div class="mono">no worker</div></div>` : '';
+  const steps = a.steps.map((label, i) => {
+    const cls = a.done || i < a.step ? 'done' : i === a.step && a.phase === 'live' && !a.failed ? 'active' : '';
+    return `<li class="${cls}">${cls === 'done' ? '✓' : cls === 'active' ? '▸' : '·'} ${label}</li>`;
+  }).join('');
+  d.dataset.agent = a.name;
+  const scroller = d.querySelector('.transcript');
+  const atBottom = !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 20;
+  const prevTop = scroller ? scroller.scrollTop : 0;
+  d.innerHTML = `
+    <h2><span class="mono"></span> · ${a.branch ? '<span class="mono br"></span>' : ''}</h2>
+    <p class="prompt"></p>
+    <div class="detail-actions"></div>
+    <h3>Where it has run</h3>
+    <div class="history">${hops || '<span class="empty">not scheduled yet</span>'}${tail}</div>
+    <h3>Steps</h3>
+    <ul class="steplist">${steps}</ul>
+    <h3>Live transcript</h3>
+    <pre class="transcript mono"></pre>`;
+  d.querySelector('h2 .mono').textContent = a.name;
+  if (a.branch) d.querySelector('.br').textContent = a.branch;
+  d.querySelector('.prompt').textContent = a.verdict ? `${a.prompt}\n\nAI review: ${a.verdict}` : a.prompt;
+  d.querySelector('.prompt').style.whiteSpace = 'pre-wrap';
+  // The card's own buttons, so they stay reachable when cards are compact tiles.
+  const box = d.querySelector('.detail-actions');
+  cards[a.name]?.querySelectorAll('.actions button').forEach(b => {
+    if (b.hidden) return;
+    const c = b.cloneNode(true);
+    c.onclick = () => b.click();
+    box.appendChild(c);
+  });
+  d.querySelectorAll('.hop').forEach((el, i) => {
+    const h = a.history[i];
+    if (!h) return;
+    el.querySelector('.n').textContent = h.node;
+    el.querySelector('.mono').textContent = h.pod;
+  });
+  const t = d.querySelector('.transcript');
+  t.textContent = a.transcript.length ? a.transcript.join('\n')
+    : a.phase === 'starting' ? 'Waiting for the sandbox to start…' : 'No output yet.';
+  t.scrollTop = atBottom ? t.scrollHeight : prevTop;
+}
+
+function renderChips() {
+  const chips = $('chips');
+  const workers = current.nodes.reduce((n, x) => n + x.workers.length, 0);
+  const items = [
+    [`cluster: ${current.cluster || 'kind'} · ${current.nodes.length} node${current.nodes.length === 1 ? '' : 's'} · ${workers} workers`, ''],
+    ['gVisor sandbox', ''],
+    ['egress: GitHub + Claude API only', ''],
+    MODE === 'live' ? ['LIVE', 'live'] : ['MOCK DATA', 'mock'],
+  ];
+  const err = fetchError || current.stats?.error;
+  if (err) items.push([fetchError ? 'backend not reachable: run python3 ui/server.py' : `cluster: ${err}`, 'err']);
+  chips.innerHTML = '';
+  for (const [text, cls] of items) {
+    const s = document.createElement('span');
+    s.className = `chip ${cls}`;
+    s.textContent = text;
+    chips.appendChild(s);
+  }
+}
+
+function renderStats() {
+  const list = current.agents;
+  document.querySelectorAll('.lane').forEach(lane => {
+    const n = list.filter(a => a.worker?.node === lane.dataset.node).length;
+    lane.querySelector('[data-count]').textContent = `${n} agent${n === 1 ? '' : 's'}`;
+  });
+  const fin = a => a.done || a.failed || a.phase === 'failed' || a.phase === 'archived';
+  const byRole = r => list.filter(a => a.role === r).length;
+  $('k-total').textContent = list.length;
+  const parts = [['coder', 'coders'], ['tester', 'test writers'], ['docs', 'docs writers'], ['sim', 'simulated']]
+    .map(([r, label]) => [byRole(r), label]).filter(([k]) => k).map(([k, label]) => `${k} ${label}`);
+  $('k-total-l').textContent = `agents${parts.length ? ' · ' + parts.join(' · ') : ''}`;
+  const awakeNow = list.filter(a => !fin(a) && a.state === 'RUNNING' && a.worker).length;
+  const max = current.settings?.maxRunning;
+  $('k-awake').textContent = max ? `${awakeNow} / ${max}` : awakeNow;
+  renderBooked();
+  const queued = list.filter(a => !fin(a) && a.phase === 'queued').length;
+  $('k-awake-l').textContent = `working now${queued ? ` · ${queued} queued` : ''}`;
+  $('k-waiting').textContent = list.filter(a => !fin(a) && a.reviewing && !a.approved && a.state !== 'RUNNING').length;
+  $('k-done').textContent = list.filter(a => a.done).length;
+  renderUsage(list);
+}
+
+const mb = mi => mi >= 1024 ? `${(mi / 1024).toFixed(1)} GB` : `${Math.round(mi)} MB`;
+
+const openDiffs = new Set();
+let resultsKey = '';
+function renderResults() {
+  const list = current.agents.filter(a => a.batch && (a.done || a.failed || a.phase === 'failed'));
+  const repo = current.repoUrl;
+  const key = JSON.stringify(list.map(a => [a.name, a.done, a.failed, a.verdict, a.pushed, (a.diff || []).length])) + [...openDiffs].join();
+  if (key === resultsKey) return;
+  resultsKey = key;
+  const done = list.filter(a => a.done).length, failed = list.length - done;
+  const pushed = list.filter(a => a.pushed).length;
+  const concerns = list.filter(a => /^concern/i.test(a.verdict || '')).length;
+  $('results-summary').textContent = list.length
+    ? `${list.length} finished · ${done} completed${pushed ? ` · ${pushed} pushed to GitHub` : ''} · ${concerns} flagged by AI review · ${failed} failed`
+    : '';
+  const box = $('results');
+  if (!list.length) { box.innerHTML = '<p class="empty">Results appear here as agents finish: what each one changed, the AI review, and a link to its branch.</p>'; return; }
+  box.innerHTML = '<table class="rtable"><thead><tr><th>Agent</th><th>Task</th><th>Outcome</th><th>AI review</th><th>Ran on</th><th></th></tr></thead><tbody></tbody></table>';
+  const tbody = box.querySelector('tbody');
+  const ROLE_LABEL = { coder: 'CODER', tester: 'TESTS', docs: 'DOCS', sim: 'SIM' };
+  for (const a of list) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><div class="mono"></div><span class="kind"></span></td><td class="task"></td><td class="out"></td><td class="ver"></td><td class="mono where"></td><td class="links"></td>`;
+    tr.querySelector('.mono').textContent = a.name;
+    const kind = tr.querySelector('.kind');
+    kind.textContent = a.kind === 'sim' && a.role !== 'sim' ? `${ROLE_LABEL[a.role]} · SIM` : (ROLE_LABEL[a.role] || 'SIM');
+    if (a.role && a.role !== 'sim') kind.classList.add(a.role);
+    tr.querySelector('.task').textContent = a.prompt;
+    const out = tr.querySelector('.out');
+    out.textContent = a.done ? `✓ ${a.result}` : `✗ ${a.failed || 'failed'}`;
+    out.className = `out ${a.done ? 'ok' : 'bad'}`;
+    const ver = tr.querySelector('.ver');
+    ver.textContent = a.verdict || '–';
+    if (a.verdict) ver.className = `ver ${/^approve/i.test(a.verdict) ? 'ok' : 'warn'}`;
+    const nodesRun = [...new Set((a.history || []).map(h => h.node))];
+    tr.querySelector('.where').textContent = nodesRun.join(' → ') || '–';
+    const links = tr.querySelector('.links');
+    if (a.diff && a.diff.length) {
+      const b = document.createElement('button');
+      b.className = 'ghost';
+      b.textContent = openDiffs.has(a.name) ? 'Hide diff' : 'View diff';
+      b.onclick = () => { openDiffs.has(a.name) ? openDiffs.delete(a.name) : openDiffs.add(a.name); resultsKey = ''; renderResults(); };
+      links.appendChild(b);
+    }
+    if (a.pushed && repo) {
+      for (const [text, url] of [['Branch on GitHub ↗', `${repo}/tree/${a.pushed.branch}`], ['Open pull request ↗', `${repo}/compare/master...${a.pushed.branch}?expand=1`]]) {
+        const l = document.createElement('a');
+        l.href = url; l.target = '_blank'; l.rel = 'noopener'; l.textContent = text;
+        links.appendChild(l);
+      }
+    }
+    tbody.appendChild(tr);
+    if (openDiffs.has(a.name)) {
+      const dr = document.createElement('tr');
+      dr.innerHTML = '<td colspan="6"><pre class="rdiff mono"></pre></td>';
+      const pre = dr.querySelector('pre');
+      for (const line of a.diff) {
+        const sp = document.createElement('span');
+        sp.className = line.startsWith('+') && !line.startsWith('+++') ? 'add' : line.startsWith('-') && !line.startsWith('---') ? 'del' : '';
+        sp.textContent = line + '\n';
+        pre.appendChild(sp);
+      }
+      tbody.appendChild(dr);
+    }
+  }
+}
+
+function renderBooked() {
+  const booked = current.usage?.booked || {};
+  for (const [pod, slot] of Object.entries(slots)) {
+    const tag = slot.closest('.worker')?.querySelector('.worker-head > span:last-child');
+    const b = booked[pod];
+    if (!tag || !b || !b.capMemMi) continue;
+    tag.className = 'booked';
+    tag.innerHTML = '<span></span><i><b></b></i>';
+    tag.querySelector('span').textContent = `booked ${b.bookedMemMi} / ${b.capMemMi} MB`;
+    tag.querySelector('i b').style.width = `${Math.min(100, (b.bookedMemMi / b.capMemMi) * 100)}%`;
+  }
+}
+
+function renderUsage(list) {
+  const u = current.usage;
+  const box = $('node-usage');
+  if (!u) { box.innerHTML = '<p class="empty">Utilization is shown in live mode.</p>'; $('density').textContent = ''; return; }
+  const scale = Math.max(1024, u.peakMemMi || 0);
+  box.innerHTML = '';
+  for (const n of current.nodes) {
+    const v = u.nodes?.[n.name] || { memMi: 0, cpuM: 0, agents: 0 };
+    const row = document.createElement('div');
+    row.className = 'nodebar';
+    row.innerHTML = `<div class="top"><b></b><span></span></div><div class="bar"><i></i></div>`;
+    row.querySelector('b').textContent = n.name;
+    row.querySelector('span').textContent = `${v.agents} awake · RAM ${mb(v.memMi)} · CPU ${(v.cpuM / 1000).toFixed(2)} cores`;
+    row.querySelector('i').style.width = `${Math.min(100, (v.memMi / scale) * 100)}%`;
+    box.appendChild(row);
+  }
+  const d = $('density');
+  const total = list.length;
+  const pods = current.nodes.reduce((k, n) => k + n.workers.length, 0);
+  if (!total || !u.perAgentMemMi) { d.textContent = 'Run a batch to measure density.'; return; }
+  const allAtOnce = u.perAgentMemMi * total;
+  d.innerHTML = '';
+  const add = (text, bold) => { const e = document.createElement(bold ? 'b' : 'span'); e.textContent = text; d.appendChild(e); };
+  add(`${total} agents on ${pods} worker pods across ${current.nodes.length} nodes. `);
+  add('Peak RAM ');
+  add(mb(u.peakMemMi), true);
+  add(` with at most ${u.peakAwake} awake, vs ≈ `);
+  add(mb(allAtOnce), true);
+  add(` if all ${total} ran at once (${mb(u.perAgentMemMi)} each), `);
+  add(`${(allAtOnce / Math.max(1, u.peakMemMi)).toFixed(1)}× less.`, true);
+  const reviewing = list.filter(a => a.reviewing && !a.approved && !a.done && !a.failed && a.state !== 'RUNNING').length;
+  if (reviewing) {
+    d.appendChild(document.createElement('br'));
+    add(`${reviewing} agents waiting for review hold `);
+    add('0 MB', true);
+    add(`. Kept running, they would hold ≈ ${mb(reviewing * u.perAgentMemMi)}.`);
+  }
+}
+
+function renderEvents() {
+  for (const e of current.events) {
+    if (e.id <= lastEventId) continue;
+    lastEventId = e.id;
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="t mono"></span><span class="a mono"></span><span class="m"></span>`;
+    li.querySelector('.t').textContent = new Date(e.t).toTimeString().slice(0, 8);
+    li.querySelector('.a').textContent = e.agent;
+    li.querySelector('.a').title = e.agent;
+    const m = li.querySelector('.m');
+    m.textContent = e.msg;
+    if (e.kind !== 'log') m.classList.add(e.kind);
+    $('events').prepend(li);
+  }
+}
+
+function render() {
+  const key = JSON.stringify(current.nodes);
+  if (key !== topoKey) { topoKey = key; buildLanes(current.nodes); }
+  const names = new Set(current.agents.map(a => a.name));
+  for (const name in cards) if (!names.has(name)) { cards[name].remove(); delete cards[name]; delete optimistic[name]; }
+  for (const a of current.agents) {
+    if (!cards[a.name]) { cards[a.name] = makeCard(a); place(a, false); }
+    updateCard(a);
+    place(a, true);
+  }
+  document.body.classList.toggle('compact', current.agents.length > 8);
+  if (selected && !names.has(selected)) selected = null;
+  if (!selected && current.agents.length) selected = current.agents[current.agents.length - 1].name;
+  renderDetail();
+  renderChips();
+  renderStats();
+  renderEvents();
+  syncSettings();
+  renderResults();
+}
+
+async function refresh() {
+  try {
+    const s = await backend.state();
+    fetchError = null;
+    // Optimistic button state lasts until the backend reports the action or the state changes.
+    for (const a of s.agents) {
+      const prev = current.agents.find(x => x.name === a.name);
+      if (optimistic[a.name] && (a.pending || (prev && prev.state !== a.state))) delete optimistic[a.name];
+    }
+    if (current.uiVersion && s.uiVersion && s.uiVersion !== current.uiVersion) location.reload();
+    current = s;
+  } catch (e) {
+    fetchError = e.message;
+  }
+  render();
+}
+
+const post = (path, body) => fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+// Task picker: the preloaded list (ticked boxes) plus any tasks typed by hand.
+const ROLE_NAMES = { coder: 'Coder', tester: 'Test writer', docs: 'Docs writer' };
+const DEFAULT_PICK = { coder: 15, tester: 8, docs: 7 };
+function roleOf(line) {
+  const m = line.match(/^(tests?|docs?|coder)\s*:\s*/i);
+  if (m) return { role: /^test/i.test(m[1]) ? 'tester' : /^doc/i.test(m[1]) ? 'docs' : 'coder', prompt: line.slice(m[0].length) };
+  if (/\btests?\b|unittest|pytest/i.test(line)) return { role: 'tester', prompt: line };
+  if (/readme|\.md\b|changelog|docstring|documentation|docs\b/i.test(line)) return { role: 'docs', prompt: line };
+  return { role: 'coder', prompt: line };
+}
+function chosenTasks() {
+  const picked = [...document.querySelectorAll('#tasklist input[type=checkbox]:checked')]
+    .map(cb => ({ prompt: cb.dataset.prompt, role: cb.dataset.role }));
+  const typed = $('t-custom').value.split('\n').map(l => l.trim()).filter(Boolean).map(roleOf);
+  return picked.concat(typed);
+}
+function updateTaskCount() {
+  const t = chosenTasks();
+  const by = r => t.filter(x => x.role === r).length;
+  $('t-count').textContent = `${t.length} selected · ${by('coder')} coder · ${by('tester')} test writer · ${by('docs')} docs writer`;
+  $('b-run').textContent = t.length ? `Run ${t.length} agent${t.length === 1 ? '' : 's'}` : 'Run agents';
+}
+async function loadTasks() {
+  try {
+    const cat = await (await fetch('/api/tasks', { cache: 'no-store' })).json();
+    const box = $('tasklist');
+    box.innerHTML = '';
+    for (const role of ['coder', 'tester', 'docs']) {
+      const group = document.createElement('div');
+      group.className = 'tgroup';
+      group.innerHTML = `<div class="tgroup-head"><span class="kind ${role}"></span><span></span><button type="button" class="ghost">all</button><button type="button" class="ghost">none</button></div>`;
+      group.querySelector('.kind').textContent = { coder: 'CODER', tester: 'TESTS', docs: 'DOCS' }[role];
+      group.querySelector('.tgroup-head span:nth-child(2)').textContent = `${ROLE_NAMES[role]} · ${cat.roles[role].length} tasks`;
+      const [all, none] = group.querySelectorAll('.tgroup-head button');
+      all.onclick = () => { group.querySelectorAll('input').forEach(i => { i.checked = true; }); updateTaskCount(); };
+      none.onclick = () => { group.querySelectorAll('input').forEach(i => { i.checked = false; }); updateTaskCount(); };
+      cat.roles[role].forEach((prompt, i) => {
+        const item = document.createElement('label');
+        item.className = 'task-item';
+        item.innerHTML = '<input type="checkbox"><span></span>';
+        const cb = item.querySelector('input');
+        cb.dataset.prompt = prompt;
+        cb.dataset.role = role;
+        cb.checked = i < DEFAULT_PICK[role];
+        item.querySelector('span').textContent = prompt;
+        group.appendChild(item);
+      });
+      box.appendChild(group);
+    }
+    box.onchange = updateTaskCount;
+    updateTaskCount();
+  } catch (e) {
+    $('tasklist').innerHTML = '<p class="empty">Could not load the task list.</p>';
+  }
+}
+$('t-custom').oninput = updateTaskCount;
+$('t-all').onclick = () => { document.querySelectorAll('#tasklist input').forEach(i => { i.checked = true; }); updateTaskCount(); };
+$('t-none').onclick = () => { document.querySelectorAll('#tasklist input').forEach(i => { i.checked = false; }); updateTaskCount(); };
+$('b-run').onclick = async () => {
+  const tasks = chosenTasks();
+  if (!tasks.length) { alert('Choose at least one task.'); return; }
+  const simulate = $('b-simulate').checked;
+  const push = $('s-push').checked;
+  if (!simulate) {
+    const docs = tasks.filter(t => t.role === 'docs').length;
+    const cost = (tasks.length - docs) * 0.12 + docs * 0.04 + tasks.length * 0.02;
+    const pushNote = push ? ' Approved changes will be pushed to GitHub, one branch per task.' : ' Changes stay inside the sandboxes (push is off).';
+    if (!confirm(`Run ${tasks.length} Claude agents? Roughly $${cost.toFixed(2)} of Claude API usage, including the AI reviews.${pushNote}`)) return;
+  }
+  $('b-run').disabled = true;
+  try {
+    const r = await post('/api/batch', simulate ? { tasks, simulate } : { tasks, simulate, push });
+    if (!r.ok) alert((await r.json().catch(() => ({}))).error || 'Could not start the agents.');
+    else $('lanes').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } finally { $('b-run').disabled = false; refresh(); }
+};
+$('b-clear').onclick = () => post('/api/clear').then(refresh);
+$('b-approve').onclick = () => post('/api/approve-all').then(refresh);
+$('s-push').onchange = () => post('/api/settings', { push: $('s-push').checked }).then(refresh);
+$('s-park').onchange = () => post('/api/settings', { parkDelay: Math.max(0, Math.min(120, +$('s-park').value || 0)) }).then(refresh);
+let pushSynced = false;
+
+function syncSettings() {
+  const st = current.settings;
+  if (!st) return;
+  if (!pushSynced) { $('s-push').checked = !!st.push; pushSynced = true; }
+  if (document.activeElement !== $('s-park')) $('s-park').value = st.parkDelay ?? 15;
+}
+if (MODE === 'mock') {
+  $('reset').hidden = false;
+  $('reset').onclick = () => { backend.reset(); lastEventId = 0; $('events').innerHTML = ''; refresh(); };
+  setInterval(() => { backend.tick(200); refresh(); }, 200);
+  $('batch-panel').hidden = true;
+  $('footer').textContent = 'Mock mode: agents are simulated in the browser. After a Suspend the mock resumes on a different node so the move is visible; real Substrate places the agent on any available worker.';
+} else {
+  loadTasks();
+  setInterval(refresh, 1000);
+  $('footer').textContent = 'Live: every agent runs in its own gVisor sandbox via Google AX + Agent Substrate. Claude agents run Claude Code on a real repo; simulated agents follow the same plan/read/edit/test rhythm without a model.';
+}
+refresh();
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.DS_Store
+# Secrets live outside the repo, in ~/.ax-demo-secrets
+*.token
+.env

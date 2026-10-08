@@ -1,0 +1,3 @@
+# Deny-all egress: no rule matches, so every outbound connection is refused.
+# Used for simulated agents, which need no network.
+rules: []

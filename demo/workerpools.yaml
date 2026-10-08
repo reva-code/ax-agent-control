@@ -1,0 +1,51 @@
+# One Substrate worker pool per kind worker node, so agents are spread 3 + 3
+# across the two nodes and a suspended agent can resume on the other node.
+# The `node` label reaches each Worker, so an actor's worker_selector can pin
+# placement to a node.
+#
+# Each worker pod declares its size. Substrate reads the limits as the worker's
+# capacity and books every actor's declared limits against it, so it only places
+# an agent where it fits (6 pods x 1Gi = 6Gi for agents on this laptop). Memory
+# requests match the limits; the CPU request stays low so kube-scheduler can
+# place all six pods.
+#
+# Apply from the substrate repo (ko resolves the worker image):
+#   cd ~/Desktop/google-ax-demo/substrate
+#   KO_DOCKER_REPO=localhost:5001 KO_DEFAULTPLATFORMS=linux/arm64 ko apply -f ../demo/workerpools.yaml
+apiVersion: ate.dev/v1alpha1
+kind: WorkerPool
+metadata:
+  name: pool-kind-worker
+  namespace: default
+  labels:
+    workload: ax-task
+    node: kind-worker
+spec:
+  replicas: 3
+  sandboxClass: gvisor
+  workerImage: ko://github.com/agent-substrate/substrate/cmd/ateom-gvisor
+  template:
+    nodeSelector:
+      kubernetes.io/hostname: kind-worker
+    resources:
+      limits: {cpu: "2", memory: 1Gi}
+      requests: {cpu: 250m, memory: 1Gi}
+---
+apiVersion: ate.dev/v1alpha1
+kind: WorkerPool
+metadata:
+  name: pool-kind-worker2
+  namespace: default
+  labels:
+    workload: ax-task
+    node: kind-worker2
+spec:
+  replicas: 3
+  sandboxClass: gvisor
+  workerImage: ko://github.com/agent-substrate/substrate/cmd/ateom-gvisor
+  template:
+    nodeSelector:
+      kubernetes.io/hostname: kind-worker2
+    resources:
+      limits: {cpu: "2", memory: 1Gi}
+      requests: {cpu: 250m, memory: 1Gi}
